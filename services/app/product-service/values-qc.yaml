@@ -1,0 +1,13 @@
+# QC-only values. Argo CD in QC reads values.yaml, then this file (later file wins).
+# Only what differs from dev.
+
+image:
+  # CI writes the release-vX.Y.Z tag here on a git tag. Keep the 2-space indent (CI uses sed).
+  # Never empty: an empty tag makes the chart use appVersion 1.16.0 -> ImagePullBackOff.
+  # Starts as the tag running in dev, until the first release.
+  tag: "6d27c1a8"
+
+# IRSA role of the QC cluster. Without it the pod uses the dev role from values.yaml and AWS calls fail with InvalidIdentityToken.
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/eks-product-service-role-qc

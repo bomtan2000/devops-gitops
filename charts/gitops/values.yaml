@@ -1,0 +1,109 @@
+# Defaults for every service. Each service overrides them in services/<namespace>/<service>/values.yaml.
+
+replicaCount: 1
+
+image:
+  repository: ""
+  pullPolicy: IfNotPresent
+  # CI writes the tag into the service's values.yaml
+  tag: ""
+
+command: []
+args: []
+
+imagePullSecrets: []
+# Set to the service name so Deployment, Service, Ingress carry the service name
+nameOverride: ""
+fullnameOverride: ""
+
+# deployment or job
+type: deployment
+backoffLimit: 3
+
+serviceAccount:
+  create: true
+  automount: false
+  # IRSA: eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/<role>
+  annotations: {}
+  # empty = fullname
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  # Container port; the Service uses the same port. Every service listens on 3000.
+  http:
+    port: 3000
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    # every service shares one ALB
+    alb.ingress.kubernetes.io/group.name: app
+  # No hosts entry = no Ingress. An entry without host = any host.
+  hosts: []
+  tls: []
+
+env: []
+# Usually Secret <service>-secret, created by hand, never in Git
+envFrom: []
+
+hostAliases: []
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "128Mi"
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Wait for the ALB to deregister the pod before stopping it: no 502s during deploys
+lifecycle:
+  preStop:
+    exec:
+      command: ["sleep", "15"]
+terminationGracePeriodSeconds: 30
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+volumes: []
+volumeMounts: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+strategy: {}

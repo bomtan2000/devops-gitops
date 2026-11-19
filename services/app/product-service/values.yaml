@@ -1,0 +1,23 @@
+nameOverride: product-service
+
+image:
+  repository: 111122223333.dkr.ecr.ap-southeast-1.amazonaws.com/apps/product-service
+  tag: "6d27c1a8"
+
+# SA name must match the IAM role trust policy
+serviceAccount:
+  name: product-service-sa
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/eks-product-service-role
+
+envFrom:
+  - secretRef:
+      name: product-service-secret
+
+ingress:
+  hosts:
+    - paths:
+        - path: /products-dax
+          pathType: Prefix
+        - path: /products
+          pathType: Prefix

@@ -1,0 +1,62 @@
+# Scan the image built on the runner (not pushed yet) with trivy. build-push.yaml calls this
+# between build and push.
+#
+# | Scans                                                | Fails when                                 |
+# |------------------------------------------------------|--------------------------------------------|
+# | OS packages of the base image (apk, apt)             | a HIGH/CRITICAL vuln has a fix available   |
+# | app libraries in the image (node_modules, .jar)      |                                            |
+#
+# Ignore one CVE: add its ID to .trivyignore at the root of the service repo (one ID per line, with a reason).
+# Upgrade trivy: change VERSION and both sha256 lines, from trivy_<version>_checksums.txt of the release.
+
+name: trivy-image
+description: Scan a local image with trivy, fail on fixable HIGH/CRITICAL vulnerabilities
+
+inputs:
+  image:
+    description: Image already in the local docker, e.g. 111122223333.dkr.ecr.../apps/svc:abc12345
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install trivy
+      shell: bash
+      run: |
+        VERSION=0.76.2
+        case "$(uname -m)" in
+          x86_64)
+            ARCH=64bit
+            SHA256=bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+            ;;
+          aarch64)
+            ARCH=ARM64
+            SHA256=ab9d51f86e6a5fb936f605faff6b593ac51bc378fff4d3e8b9d58358b9c367c3
+            ;;
+          *)
+            echo "::error::Architecture $(uname -m) not supported"
+            exit 1
+            ;;
+        esac
+        FILE="trivy_${VERSION}_Linux-${ARCH}.tar.gz"
+
+        curl -fsSL -o "/tmp/${FILE}" "https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/${FILE}"
+        echo "${SHA256}  /tmp/${FILE}" | sha256sum -c -
+        sudo tar -xzf "/tmp/${FILE}" -C /usr/local/bin trivy
+        trivy --version
+
+    # --image-src docker: read the image from local docker, do not pull from the registry
+    # --ignore-unfixed: only block vulnerabilities that have a fix
+    - name: Trivy scan image
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        trivy image \
+          --image-src docker \
+          --scanners vuln \
+          --severity HIGH,CRITICAL \
+          --ignore-unfixed \
+          --exit-code 1 \
+          --no-progress \
+          "${IMAGE}"

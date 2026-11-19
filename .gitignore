@@ -1,0 +1,9 @@
+.DS_Store
+._*
+.vscode/
+.idea/
+# local notes with real account IDs / IAM details never go to Git
+role.md
+# Lint CI for this repo stays local, not pushed. build-push / security-scan / trivy action ARE pushed
+.github/workflows/ci.yml
+argocd/

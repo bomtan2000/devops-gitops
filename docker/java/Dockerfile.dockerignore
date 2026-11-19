@@ -1,0 +1,10 @@
+.git
+.github
+devops
+target
+build
+.gradle
+.idea
+*.iml
+Dockerfile
+.dockerignore

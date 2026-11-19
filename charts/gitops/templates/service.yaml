@@ -1,0 +1,41 @@
+
+{{if or  .Values.service.http .Values.service.grpc .Values.service.smtp}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitops.fullname" . }}
+  labels:
+    {{- include "gitops.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  {{if or  .Values.service.http}}
+    - port: {{ .Values.service.http.port }}
+      targetPort: {{ .Values.service.http.port }}
+      protocol: TCP
+      name: http
+      {{if eq .Values.service.type "NodePort" }}
+      nodePort: {{ .Values.service.http.nodePort }}
+      {{end}}
+  {{end}}
+  {{if .Values.service.grpc}}
+    - port: {{ .Values.service.grpc.port }}
+      targetPort: {{ .Values.service.grpc.port }}
+      protocol: TCP
+      name: grpc
+      {{if eq .Values.service.type "NodePort" }}
+      nodePort: {{ .Values.service.grpc.nodePort }}
+      {{end}}
+  {{end}}
+  {{if .Values.service.smtp}}
+    - port: {{ .Values.service.smtp.port }}
+      targetPort: {{ .Values.service.smtp.port }}
+      protocol: TCP
+      name: smtp
+      {{if eq .Values.service.type "NodePort" }}
+      nodePort: {{ .Values.service.smtp.nodePort }}
+      {{end}}
+  {{end}}
+  selector:
+    {{- include "gitops.selectorLabels" . | nindent 4 }}
+{{end}}

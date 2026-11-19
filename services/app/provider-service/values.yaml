@@ -1,0 +1,32 @@
+nameOverride: provider-service
+
+image:
+  repository: 111122223333.dkr.ecr.ap-southeast-1.amazonaws.com/apps/provider-service
+  tag: "37f68bf1"
+
+# No IRSA: provider-service reads RDS with credentials from its Secret.
+serviceAccount:
+  name: provider-service-sa
+
+envFrom:
+  - secretRef:
+      name: provider-service-secret
+
+ingress:
+  hosts:
+    - paths:
+        - path: /providers/health
+          pathType: Prefix
+        - path: /providers
+          pathType: Prefix
+        - path: /efs
+          pathType: Prefix
+
+volumeMounts:
+  - name: efs-storage
+    mountPath: /data/efs
+
+volumes:
+  - name: efs-storage
+    persistentVolumeClaim:
+      claimName: efs-claim

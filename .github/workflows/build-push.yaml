@@ -1,0 +1,223 @@
+name: build-push
+
+on:
+  workflow_call:
+    inputs:
+      aws-role-arn:
+        description: GitHub Actions IAM role of the service (gha-<service>)
+        type: string
+        required: true
+      template:
+        description: Shared Dockerfile in devops/docker/<template>/ (node, java)
+        type: string
+        default: node
+      dockerfile:
+        description: Dockerfile inside the service repo; when set, template is ignored (e.g. Dockerfile)
+        type: string
+        default: ""
+      scan-image:
+        description: Scan the image with trivy before pushing. false to skip
+        type: boolean
+        default: true
+    secrets:
+      DEVOPS_TOKEN:
+        description: Token with write access to the GitOps repo
+        required: true
+
+env:
+  SERVICE: ${{ github.event.repository.name }}
+  AWS_REGION: ap-southeast-1
+  REGISTRY: 111122223333.dkr.ecr.ap-southeast-1.amazonaws.com
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: build-${{ github.repository }}
+      cancel-in-progress: false
+    # Handed to the deploy job (different runner, GITHUB_ENV is not shared)
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      values-file: ${{ steps.prepare.outputs.values-file }}
+      commit-msg: ${{ steps.prepare.outputs.commit-msg }}
+
+    steps:
+      - name: Checkout service code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Checkout devops repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bomtan2000/devops-gitops
+          token: ${{ secrets.DEVOPS_TOKEN }}
+          path: devops
+
+      # Validate every input before building; fail fast
+      - name: Prepare
+        id: prepare
+        env:
+          TEMPLATE: ${{ inputs.template }}
+          CUSTOM_DOCKERFILE: ${{ inputs.dockerfile }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [[ ! "${GITHUB_REF_NAME}" =~ ^[a-zA-Z0-9-]+-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match <name>-vX.Y.Z"
+              exit 1
+            fi
+            TAG="${GITHUB_REF_NAME}"
+            DEPLOY_ENV=qc
+            VALUES_NAME=values-qc.yaml
+            COMMIT_MSG="deploy-qc(${SERVICE}): ${TAG}"
+          else
+            TAG="${GITHUB_SHA::8}"
+            DEPLOY_ENV=dev
+            VALUES_NAME=values.yaml
+            COMMIT_MSG="deploy(${SERVICE}): ${TAG}"
+          fi
+
+          IMAGE="${REGISTRY}/apps/${SERVICE}:${TAG}"
+          CACHE="${REGISTRY}/apps/${SERVICE}:buildcache"
+          DOCKERFILE="${CUSTOM_DOCKERFILE:-devops/docker/${TEMPLATE}/Dockerfile}"
+
+          if [ ! -f "${DOCKERFILE}" ]; then
+            echo "::error::${DOCKERFILE} not found"
+            exit 1
+          fi
+
+          shopt -s nullglob
+          FOUND=(devops/services/*/"${SERVICE}"/values.yaml)
+          if [ "${#FOUND[@]}" -ne 1 ]; then
+            echo "::error::Need exactly 1 devops/services/<namespace>/${SERVICE}/values.yaml, found ${#FOUND[@]}"
+            exit 1
+          fi
+          VALUES_FILE="$(dirname "${FOUND[0]}")/${VALUES_NAME}"
+
+          if [ ! -f "${VALUES_FILE}" ]; then
+            echo "::error::${SERVICE} is not enabled for QC: ${VALUES_FILE} missing (see README, QC)"
+            exit 1
+          fi
+
+          if ! grep -q '^  tag: ' "${VALUES_FILE}"; then
+            echo "::error::${VALUES_FILE} has no image.tag line"
+            exit 1
+          fi
+
+          {
+            echo "TAG=${TAG}"
+            echo "IMAGE=${IMAGE}"
+            echo "CACHE=${CACHE}"
+            echo "DOCKERFILE=${DOCKERFILE}"
+            echo "VALUES_FILE=${VALUES_FILE}"
+            echo "COMMIT_MSG=${COMMIT_MSG}"
+          } >> "${GITHUB_ENV}"
+
+          {
+            echo "tag=${TAG}"
+            echo "values-file=${VALUES_FILE}"
+            echo "commit-msg=${COMMIT_MSG}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Deploy:      ${DEPLOY_ENV}"
+          echo "Image:       ${IMAGE}"
+          echo "Cache:       ${CACHE}"
+          echo "Dockerfile:  ${DOCKERFILE}"
+          echo "Values file: ${VALUES_FILE}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Check release tag not on ECR
+        if: github.ref_type == 'tag' && github.run_attempt == '1'
+        run: |
+          if OUT=$(aws ecr describe-images --repository-name "apps/${SERVICE}" \
+              --image-ids imageTag="${TAG}" 2>&1); then
+            echo "::error::${IMAGE} already exists on ECR. Cut a new version, never reuse ${TAG}"
+            exit 1
+          elif ! grep -q ImageNotFoundException <<< "${OUT}"; then
+            echo "::error::Cannot query ECR: ${OUT}"
+            exit 1
+          fi
+
+      - name: Login to ECR
+        run: aws ecr get-login-password | docker login -u AWS --password-stdin "${REGISTRY}"
+
+      # The default docker driver cannot export cache to a registry; docker-container can
+      - name: Set up buildx
+        run: docker buildx create --name ci --driver docker-container --bootstrap --use
+
+      # Build into the local docker (--load), do not push yet: push only after a clean scan.
+      # Cache still goes to the buildcache tag in the service's own ECR repo.
+      - name: Build image
+        run: |
+          docker buildx build \
+            -f "${DOCKERFILE}" \
+            -t "${IMAGE}" \
+            --cache-from "type=registry,ref=${CACHE}" \
+            --cache-to "type=registry,ref=${CACHE},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true" \
+            --provenance=false \
+            --load \
+            .
+
+      # Scan logic lives in devops/.github/actions/trivy-image/action.yaml
+      - name: Scan image
+        if: inputs.scan-image
+        uses: ./devops/.github/actions/trivy-image
+        with:
+          image: ${{ env.IMAGE }}
+
+      - name: Push image
+        run: docker push "${IMAGE}"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    # environment: qc   # enable for a manual approval before deploy (create the environment in the service repo settings)
+    concurrency:
+      group: deploy-${{ github.repository }}
+      cancel-in-progress: false
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      VALUES_FILE: ${{ needs.build.outputs.values-file }}
+      COMMIT_MSG: ${{ needs.build.outputs.commit-msg }}
+
+    steps:
+      # VALUES_FILE looks like devops/services/<ns>/<service>/values.yaml, so check out into path devops
+      - name: Checkout devops repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bomtan2000/devops-gitops
+          token: ${{ secrets.DEVOPS_TOKEN }}
+          path: devops
+
+      - name: Update image tag
+        run: |
+          sed -i "s|^  tag: .*|  tag: \"${TAG}\"|" "${VALUES_FILE}"
+
+      - name: Commit and push to devops
+        working-directory: devops
+        run: |
+          if git diff --quiet; then
+            echo "Tag ${TAG} already in ${VALUES_FILE}, nothing to commit"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "${COMMIT_MSG}"
+
+          # Several services may push to the GitOps repo at once: retry up to 3 times
+          for _ in 1 2 3; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep 3
+          done
+          echo "::error::Push to the GitOps repo failed after 3 attempts"
+          exit 1

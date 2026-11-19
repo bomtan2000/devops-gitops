@@ -1,0 +1,21 @@
+nameOverride: order-service
+
+image:
+  repository: 111122223333.dkr.ecr.ap-southeast-1.amazonaws.com/apps/order-service
+  tag: "f22ea626"
+
+# SA name must match the IAM role trust policy
+serviceAccount:
+  name: order-service-sa
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/eks-order-service-role
+
+envFrom:
+  - secretRef:
+      name: order-service-secret
+
+ingress:
+  hosts:
+    - paths:
+        - path: /orders
+          pathType: Prefix
