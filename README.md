@@ -119,9 +119,23 @@ jobs:
     with:
       aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
       template: node            # or java, or dockerfile: Dockerfile for a custom one
+      scan-image: true          # false = skip the trivy scan (build -> push directly)
     secrets:
       DEVOPS_TOKEN: ${{ secrets.DEVOPS_TOKEN }}
 ```
+
+Inputs of `build-push.yaml` (passed under `with:`; a reusable workflow does not read the caller's `env`):
+
+| Input | Type | Default | Meaning |
+|---|---|---|---|
+| `aws-role-arn` | string | required | IAM role assumed through GitHub OIDC (`gha-<service>`) |
+| `template` | string | `node` | Shared Dockerfile `docker/<template>/Dockerfile` (`node`, `java`) |
+| `dockerfile` | string | `""` | Dockerfile inside the service repo. When set, `template` is ignored |
+| `scan-image` | boolean | `true` | trivy scan between build and push. `false` skips it |
+
+Prefer ignoring **one** CVE over turning the scan off: add its ID to `.trivyignore` at the root
+of the service repo, one ID per line with the reason in a comment. `scan-image: false` is for an
+emergency hotfix, and should be reverted in the next commit.
 
 | Name | Kind | Value |
 |---|---|---|
